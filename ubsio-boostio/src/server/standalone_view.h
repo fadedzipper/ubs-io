@@ -24,7 +24,7 @@ public:
     using NodeView = std::map<CmNodeId, CmNodeInfo, CmNodeIdCmp>;
     using PtView = std::map<uint16_t, CmPtInfo>;
 
-    static BResult Build(const BioConfig &config, CmNodeId &localNid, NodeView &nodeView, PtView &ptView);
+    static BResult Build(const BioConfigPtr &config, CmNodeId &localNid, NodeView &nodeView, PtView &ptView);
 };
 }
 }

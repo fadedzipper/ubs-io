@@ -29,11 +29,11 @@ CmDiskStatus ToCmDiskStatus(uint16_t diskId)
 }
 }
 
-BResult StandaloneView::Build(const BioConfig &config, CmNodeId &localNid, NodeView &nodeView, PtView &ptView)
+BResult StandaloneView::Build(const BioConfigPtr &config, CmNodeId &localNid, NodeView &nodeView, PtView &ptView)
 {
-    const auto &cmConfig = config.GetCmConfig();
-    const auto &netConfig = config.GetNetConfig();
-    const auto &daemonConfig = config.GetDaemonConfig();
+    const auto &cmConfig = config->GetCmConfig();
+    const auto &netConfig = config->GetNetConfig();
+    const auto &daemonConfig = config->GetDaemonConfig();
 
     const auto configDiskNum = static_cast<uint32_t>(daemonConfig.diskList.size());
     if (configDiskNum == 0) {

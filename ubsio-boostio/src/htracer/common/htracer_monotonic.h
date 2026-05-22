@@ -14,6 +14,7 @@
 #define HTRACER_MONOTONIC_H
 
 #include <cstdio>
+#include <cstdint>
 #include <fstream>
 #include <string>
 #ifdef __x86_64__

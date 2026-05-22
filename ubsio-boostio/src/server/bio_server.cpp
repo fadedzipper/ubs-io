@@ -445,7 +445,7 @@ BResult BioServer::BioStandaloneViewInit()
     StandaloneView::NodeView nodeView;
     StandaloneView::PtView ptView;
     CmNodeId localNid;
-    BResult ret = StandaloneView::Build(*mConfig, localNid, nodeView, ptView);
+    BResult ret = StandaloneView::Build(mConfig, localNid, nodeView, ptView);
     if (UNLIKELY(ret != BIO_OK)) {
         LOG_ERROR("Build standalone view failed, ret:" << ret << ".");
         return ret;
