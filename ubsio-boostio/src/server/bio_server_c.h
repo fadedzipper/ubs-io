@@ -22,6 +22,8 @@ extern "C" {
 
 int32_t BioServerInit();
 
+int32_t BioServerStandaloneInit();
+
 void BioServerExit(void);
 
 uintptr_t GetBioServerNet();
@@ -37,6 +39,8 @@ const char *GetPrometheusListenAddress(void);
 uint32_t GetNegoWorkIoTimeOut();
 
 uint32_t GetPrometheusScrapeIntervalSec();
+
+int32_t GetRuntimeConfig(ShmInitResponse *rsp);
 
 int32_t GetLocalNid(GetLocalNidResponse *rsp);
 

@@ -39,6 +39,7 @@ public:
 public:
     using BioServerStartFuncPtr = int32_t (*)();
     using BioServerExitFuncPtr = void (*)();
+    using GetRuntimeConfigFuncPtr = int32_t (*)(ShmInitResponse *);
     using GetBioServerCrcFlagFuncPtr = bool (*)();
     using GetBioServerCliFlagFuncPtr = bool (*)();
     using GetBioServerPromethuesToggleFuncPtr = bool (*)();
@@ -84,6 +85,9 @@ public:
     NetEnginePtr GetNetService()
     {
         uintptr_t netPtr = getNetEngineOp();
+        if (netPtr == 0) {
+            return nullptr;
+        }
         NetEnginePtr netEngine = MakeRef<NetEngine>();
         netEngine = reinterpret_cast<NetEngine *>(netPtr);
         return netEngine;
@@ -102,6 +106,8 @@ public:
     uint32_t GetPrometheusScrapeIntervalSec();
 
     BResult GetLocalNodeInfo(uint16_t &protocol, CmNodeId &localNid);
+
+    BResult GetRuntimeConfig(ShmInitResponse &rsp);
 
     BResult GetLocalQuotaInfo(uint32_t scene, bool &enable, uint64_t &preloadSize);
 
@@ -162,6 +168,7 @@ private:
     BResult InitUpgradeOperation();
     BResult InitOperation();
     void *LoadFunction(const char *name);
+    bool IsDirectMode() const;
 
     BResult SendGetLocalNodeInfoRequest(uint16_t &protocol, CmNodeId &localNid);
 
@@ -201,7 +208,9 @@ private:
 
     void *handler = nullptr;
     BioServerStartFuncPtr startOp = nullptr;
+    BioServerStartFuncPtr standaloneStartOp = nullptr;
     BioServerExitFuncPtr exitOp = nullptr;
+    GetRuntimeConfigFuncPtr getRuntimeConfigOp = nullptr;
     GetBioServerCrcFlagFuncPtr getCrcFlag = nullptr;
     GetBioServerCliFlagFuncPtr getCliFlag = nullptr;
     GetBioServerPromethuesToggleFuncPtr getPrometheusToggle = nullptr;

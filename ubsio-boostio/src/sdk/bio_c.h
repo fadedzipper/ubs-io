@@ -56,7 +56,8 @@ typedef enum {
 
 typedef enum {
     CONVERGENCE,
-    SEPARATES
+    SEPARATES,
+    STANDALONE
 } WorkerMode;
 
 typedef enum {

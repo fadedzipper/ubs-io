@@ -107,11 +107,17 @@ public:
 
     inline uint32_t GetDataPage() const
     {
+        if (mNetEngine == nullptr) {
+            return 0;
+        }
         return mNetEngine->GetDataPage();
     }
 
     inline BResult Alloc(uint64_t size, NetMrInfo &mr)
     {
+        if (mNetEngine == nullptr) {
+            return BIO_NOT_READY;
+        }
         if (UNLIKELY(mNetEngine->GetDataPage() < size)) {
             return BIO_ALLOC_FAIL;
         }
@@ -124,17 +130,26 @@ public:
 
     inline void Free(uintptr_t address)
     {
+        if (mNetEngine == nullptr || address == 0) {
+            return;
+        }
         mNetEngine->FreeLocalMrSingle(address);
     }
 
     uint8_t *GetShmAddress(uint64_t offset, uint32_t len)
     {
+        if (mNetEngine == nullptr) {
+            return nullptr;
+        }
         return mNetEngine->GetShmAddress(offset, len);
     }
 
     template <typename TReq, typename TResp>
     inline BResult SendSync(const BioNodeId target, uint16_t opcode, TReq &req, TResp &rsp)
     {
+        if (mNetEngine == nullptr) {
+            return BIO_NOT_READY;
+        }
         BResult ret = BIO_INNER_ERR;
         BIO_TP_START(SDK_BIO_MIRROR_SEND_SYNC_FAIL, &ret, BIO_INNER_RETRY);
         ret = mNetEngine->SyncCall(target, opcode, req, rsp);
@@ -145,28 +160,45 @@ public:
     template <typename TReq, typename TResp>
     inline BResult SendSync(const BioNodeId target, uint16_t opcode, TReq &req, TResp **rsp, uint64_t &respLen)
     {
+        if (mNetEngine == nullptr) {
+            return BIO_NOT_READY;
+        }
         return mNetEngine->SyncCall(target, opcode, req, rsp, respLen);
     }
 
     template <typename TReq>
     inline void SendAsync(const BioNodeId target, uint16_t opcode, TReq &req, Callback &cb)
     {
+        if (mNetEngine == nullptr) {
+            cb.cb(cb.cbCtx, nullptr, 0, BIO_NOT_READY);
+            return;
+        }
         mNetEngine->AsyncCall(target, opcode, req, cb);
     }
 
     template <typename TReq> BResult SendAsync(const BioNodeId &targetNodeId, uint16_t opCode, TReq &req)
     {
+        if (mNetEngine == nullptr) {
+            return BIO_NOT_READY;
+        }
         return mNetEngine->AsyncCallWithoutResponse(targetNodeId, opCode, req);
     }
 
     inline void SendAsyncBuff(const BioNodeId target, uint16_t opcode, void *req, uint32_t reqLen,
         Callback &cb)
     {
+        if (mNetEngine == nullptr) {
+            cb.cb(cb.cbCtx, nullptr, 0, BIO_NOT_READY);
+            return;
+        }
         mNetEngine->AsyncCallBuff(target, opcode, req, reqLen, cb);
     }
 
     inline uint64_t GetLocalMrKey()
     {
+        if (mMode == STANDALONE || mNetEngine == nullptr) {
+            return 0;
+        }
         uint64_t key = 0;
         if (mMode == CONVERGENCE) {
             mNetEngine->GetLocalMrKey(key);
@@ -183,6 +215,7 @@ public:
     DEFINE_REF_COUNT_FUNCTIONS;
 
 private:
+    void ApplyRuntimeConfig(const ShmInitResponse &rsp);
     BResult CheckShmFd();
     BResult CorrectFd();
     BResult ShmInitInner();

@@ -307,11 +307,12 @@ BResult MirrorServer::AllocCacheQuota(AllocQuotaRequest &req, AllocQuotaResponse
         return BIO_INNER_RETRY;
     }
     auto rpcEngine = bioServer->GetNetEngine();
-    if (rpcEngine == nullptr) {
+    if (rpcEngine == nullptr && !bioServer->IsStandaloneMode()) {
         LOG_ERROR("Net engine get fail");
         return BIO_INNER_RETRY;
     }
-    if (req.nid != bioServer->GetLocalNid().VNodeId() && !rpcEngine->IsChannelExist(req.nid, req.cid)) {
+    if (!bioServer->IsStandaloneMode() &&
+        req.nid != bioServer->GetLocalNid().VNodeId() && !rpcEngine->IsChannelExist(req.nid, req.cid)) {
         LOG_ERROR("Invalid nodeId " << req.nid << " or cid " << req.cid << ", need retry.");
         return BIO_INVALID_PARAM;
     }
@@ -955,11 +956,17 @@ BResult MirrorServer::Load(LoadRequest &req)
 
 BResult MirrorServer::NotifyUpdate(NotifyUpdateRequest &req)
 {
-    return BioServer::Instance()->GetCm()->ReportServiceState(req.flag);
+    return BioServer::Instance()->ReportServiceState(req.flag);
 }
 
 BResult MirrorServer::CheckUpdateReady(CheckUpdateReadyRequest &req, CheckUpdateReadyResponse &rsp)
 {
+    if (BioServer::Instance()->IsStandaloneMode()) {
+        auto chkRet = Cache::Instance().ServiceUngradeFlush();
+        rsp.flag = (chkRet == BIO_OK);
+        return BIO_OK;
+    }
+
     auto rpcEngine = BioServer::Instance()->GetNetEngine();
     uint64_t curNodeTimes = 0;
     std::map<CmNodeId, CmNodeInfo, CmNodeIdCmp> nodeView = BioServer::Instance()->GetNodeView(&curNodeTimes);
@@ -1030,7 +1037,9 @@ BResult MirrorServer::Initialize()
     if (mStarted) {
         return BIO_OK;
     }
-    RegisterOpcode();
+    if (BioServer::Instance()->GetNetEngine() != nullptr) {
+        RegisterOpcode();
+    }
     mBioConfig = BioConfig::Instance();
     if (mBioConfig == nullptr) {
         LOG_ERROR("Mirror server init bio config failed");

@@ -14,6 +14,7 @@
 #define FILESTREAM_INTERCEPTOR_H
 
 #include <cstdio>
+#include <cstdint>
 
 namespace ock {
 namespace interceptor {

@@ -13,8 +13,10 @@
 #ifndef BIO_SERVER_H
 #define BIO_SERVER_H
 
+#include <atomic>
 #include <mutex>
 #include <utility>
+#include <vector>
 #include "bio_config_instance.h"
 #include "bio_err.h"
 #include "bio_ref.h"
@@ -180,7 +182,7 @@ class BioServer {
 public:
     BioServer() noexcept;
 
-    BResult Start();
+    BResult Start(bool standaloneMode = false);
     void Exit();
 
     static BioServerPtr &Instance()
@@ -276,7 +278,24 @@ public:
 
     inline bool GetServiceState()
     {
+        if (mCm == nullptr) {
+            return mStandaloneServiceState.load();
+        }
         return mCm->GetServiceState();
+    }
+
+    inline bool IsStandaloneMode() const
+    {
+        return mStandaloneMode;
+    }
+
+    inline BResult ReportServiceState(bool isUpgrade)
+    {
+        if (mCm == nullptr) {
+            mStandaloneServiceState.store(isUpgrade);
+            return BIO_OK;
+        }
+        return mCm->ReportServiceState(isUpgrade);
     }
 
     inline std::map<CmNodeId, CmNodeInfo, CmNodeIdCmp> GetNodeView(uint64_t *curNodeTimes)
@@ -320,6 +339,9 @@ public:
 
     inline uint64_t GetLocalMrKey()
     {
+        if (mNetEngine == nullptr) {
+            return 0;
+        }
         uint64_t key = 0;
         mNetEngine->GetLocalMrKey(key);
         return key;
@@ -327,6 +349,9 @@ public:
 
     inline BResult MemAlloc(uint64_t size, NetMrInfo &mr)
     {
+        if (mNetEngine == nullptr) {
+            return BIO_NOT_READY;
+        }
         if (size > mNetEngine->GetDataPage()) {
             return BIO_ALLOC_FAIL;
         }
@@ -337,6 +362,9 @@ public:
 
     inline BResult MemAlloc(uint64_t size, uint64_t *addr)
     {
+        if (mNetEngine == nullptr) {
+            return BIO_NOT_READY;
+        }
         uintptr_t address;
         uint64_t outKey;
         auto ret = mNetEngine->AllocLocalMrSingle(address, outKey);
@@ -349,6 +377,9 @@ public:
 
     inline void MemFree(uint64_t addr)
     {
+        if (mNetEngine == nullptr) {
+            return;
+        }
         mNetEngine->FreeLocalMrSingle(addr);
     }
 
@@ -376,6 +407,7 @@ public:
     DEFINE_REF_COUNT_FUNCTIONS;
 
 protected:
+    std::vector<ModuleDesc> BuildModules(bool standaloneMode);
     BResult BioConfigInit();
     BResult BioLoggerInit(std::string pathName);
     void BioLoggerExit();
@@ -389,6 +421,7 @@ protected:
     void BioNetExit();
     BResult BioCmInit();
     void BioCmExit();
+    BResult BioStandaloneViewInit();
     BResult BioMirrorServerInit();
     void BioMirrorServerExit();
     BResult BioCacheInit();
@@ -403,6 +436,10 @@ protected:
     void Connection();
     BResult HandleCmPtEvent(const std::map<uint16_t, CmPtInfo> &ptInfos);
     bool CheckNeedCrb(const std::map<uint16_t, CmPtInfo> &ptInfos);
+    BResult GetLocalDiskIdFromView(uint16_t ptId, uint16_t &diskId);
+    void GetLocalDiskStatusFromView(uint16_t ptId, uint16_t diskId, bool &isNormal);
+    BResult CheckPtDegradeFromView(uint16_t ptId, bool &isDegrade);
+    BResult CheckLocalRoleFromView(uint16_t ptId, bool &isMaster);
 
 private:
     BResult StartRpcService(const NetOptions &opt);
@@ -430,6 +467,8 @@ private:
     bool mNetEngineInited = false;
     bool mCacheInited = false;
     bool mMirrorInited = false;
+    bool mStandaloneMode = false;
+    std::atomic<bool> mStandaloneServiceState{false};
     DEFINE_REF_COUNT_VARIABLE;
 };
 }

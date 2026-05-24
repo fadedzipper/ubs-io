@@ -28,6 +28,13 @@
 
 using namespace ock::bio;
 
+namespace {
+bool IsDirectMode(WorkerMode mode)
+{
+    return mode == CONVERGENCE || mode == STANDALONE;
+}
+}
+
 static const uint32_t IO_EXTRATEGE_TIME = 3; // IO策略3s过期
 
 BResult MirrorClient::SendCreateFlowRequestRemote(uint16_t nodeId, CmPtInfo &ptEntry, FlowInfo &flowInfo)
@@ -691,7 +698,7 @@ BResult MirrorClient::GetImpl(MirrorGet &param, uint64_t &realLen)
     req.ptId = ptId;
     req.offset = param.offset;
     req.length = param.length;
-    req.isConvDeploy = (mMode == WorkerMode::CONVERGENCE);
+    req.isConvDeploy = IsDirectMode(mMode);
     req.enableCrc = mEnableCrc;
     BIO_TRACE_START(SDK_TRACE_GET_SEND);
     ret = SendGetRequest(ptEntry, req, param.value, realLen);
@@ -957,7 +964,7 @@ BResult MirrorClient::AllocSpaceImpl(uint16_t ptId, CmPtInfo &ptEntry, MirrorPut
     }
     spaceInfo.addressNum = rsp->addrNum;
     for (uint32_t idx = 0; idx < spaceInfo.addressNum; idx++) {
-        if (mMode == CONVERGENCE) {
+        if (IsDirectMode(mMode)) {
             spaceInfo.address[idx].address = rsp->addr[idx].chunkId + rsp->addr[idx].chunkOffset;
         } else {
             uint8_t *realAddr = net::BioClientNet::Instance()->GetShmAddress(rsp->addrOffset[idx],
@@ -1119,7 +1126,7 @@ BResult MirrorClient::DataCopy(const char *from, uint32_t fromLen, SliceAddrDesc
     uint64_t off = 0;
     for (uint32_t i = 0; i < addrNum; i++) {
         uint8_t *realAddr = nullptr;
-        if (mMode == WorkerMode::CONVERGENCE) {
+        if (IsDirectMode(mMode)) {
             realAddr = reinterpret_cast<uint8_t *>(addr[i].chunkId + addr[i].chunkOffset);
         } else {
             realAddr = net::BioClientNet::Instance()->GetShmAddress(offset[i], addr[i].chunkLen);

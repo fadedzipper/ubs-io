@@ -27,6 +27,7 @@
 #include "htracer.h"
 #include "interceptor_server.h"
 #include "bio_server.h"
+#include "standalone_view.h"
 
 namespace ock {
 namespace bio {
@@ -40,32 +41,47 @@ static void Log(int level, const char *msg)
     }
 }
 
-BioServer::BioServer() noexcept
+std::vector<ModuleDesc> BioServer::BuildModules(bool standaloneMode)
 {
-    std::vector<ModuleDesc> modules = {
+    std::vector<ModuleDesc> modules;
 #ifdef USE_DEBUG_TP_TOOLS
-        { "Tracepoint", std::bind(&BioServer::BioServerTracePointInit, this), nullptr, nullptr, nullptr },
+    modules.emplace_back("Tracepoint", std::bind(&BioServer::BioServerTracePointInit, this), nullptr, nullptr,
+        nullptr);
 #endif
-        { "Diagnose", std::bind(&BioServer::BioServerDiagnoseInit, this), nullptr, nullptr, nullptr },
-        { "Tracer", std::bind(&BioServer::BioTraceInit, this), nullptr, nullptr,
-            std::bind(&BioServer::BioTraceExit, this) },
-        { "UnderFs", std::bind(&BioServer::BioUnderFsInit, this), nullptr, nullptr,
-            std::bind(&BioServer::BioUnderFsExit, this) },
-        { "Bdm", std::bind(&BioServer::BioBdmInit, this), nullptr, nullptr, std::bind(&BioServer::BioBdmExit, this) },
-        { "Net", std::bind(&BioServer::BioNetInit, this), nullptr, nullptr, std::bind(&BioServer::BioNetExit, this) },
-        { "Flow", std::bind(&BioServer::BioFlowInit, this), nullptr, nullptr,
-            std::bind(&BioServer::BioFlowExit, this) },
-        { "Cache", std::bind(&BioServer::BioCacheInit, this), nullptr, nullptr,
-            std::bind(&BioServer::BioCacheExit, this) },
-        { "MirrorServer", std::bind(&BioServer::BioMirrorServerInit, this), nullptr, nullptr,
-            std::bind(&BioServer::BioMirrorServerExit, this) },
-        { "CM", std::bind(&BioServer::BioCmInit, this), nullptr, nullptr,
-            std::bind(&BioServer::BioCmExit, this) },
-    };
-    mService = MakeRef<BioServiceProc>(modules);
+    modules.emplace_back("Diagnose", std::bind(&BioServer::BioServerDiagnoseInit, this), nullptr, nullptr, nullptr);
+    modules.emplace_back("Tracer", std::bind(&BioServer::BioTraceInit, this), nullptr, nullptr,
+        std::bind(&BioServer::BioTraceExit, this));
+    modules.emplace_back("UnderFs", std::bind(&BioServer::BioUnderFsInit, this), nullptr, nullptr,
+        std::bind(&BioServer::BioUnderFsExit, this));
+    modules.emplace_back("Bdm", std::bind(&BioServer::BioBdmInit, this), nullptr, nullptr,
+        std::bind(&BioServer::BioBdmExit, this));
+    if (!standaloneMode) {
+        modules.emplace_back("Net", std::bind(&BioServer::BioNetInit, this), nullptr, nullptr,
+            std::bind(&BioServer::BioNetExit, this));
+    }
+    modules.emplace_back("Flow", std::bind(&BioServer::BioFlowInit, this), nullptr, nullptr,
+        std::bind(&BioServer::BioFlowExit, this));
+    if (standaloneMode) {
+        modules.emplace_back("StandaloneView", std::bind(&BioServer::BioStandaloneViewInit, this), nullptr, nullptr,
+            nullptr);
+    }
+    modules.emplace_back("Cache", std::bind(&BioServer::BioCacheInit, this), nullptr, nullptr,
+        std::bind(&BioServer::BioCacheExit, this));
+    modules.emplace_back("MirrorServer", std::bind(&BioServer::BioMirrorServerInit, this), nullptr, nullptr,
+        std::bind(&BioServer::BioMirrorServerExit, this));
+    if (!standaloneMode) {
+        modules.emplace_back("CM", std::bind(&BioServer::BioCmInit, this), nullptr, nullptr,
+            std::bind(&BioServer::BioCmExit, this));
+    }
+    return modules;
 }
 
-BResult BioServer::Start()
+BioServer::BioServer() noexcept
+{
+    mService = nullptr;
+}
+
+BResult BioServer::Start(bool standaloneMode)
 {
     std::lock_guard<std::mutex> lock(mStartLock);
     BIO_TP_START(NO_PROCESS_SERVER_START, 0);
@@ -87,6 +103,9 @@ BResult BioServer::Start()
     UnderFs::InitUnderFsConfig(mConfig->GetUnderFsConfig());
     auto &daemonConfig = mConfig->GetDaemonConfig();
     BIO_LOG_RESET_LEVEL(daemonConfig.logLevel);
+    mStandaloneMode = standaloneMode;
+    mStandaloneServiceState.store(false);
+    mService = MakeRef<BioServiceProc>(BuildModules(mStandaloneMode));
 
     // 2. Initialize boostio service
     ChkTrue(mService != nullptr, BIO_ERR, "Boostio service not created.");
@@ -94,6 +113,7 @@ BResult BioServer::Start()
     BIO_TP_START(SERVICE_START_FAIL, &ret, BIO_ERR);
     BIO_TP_END;
     if (ret != BIO_OK) {
+        mStarted = false;
         return ret;
     }
 
@@ -102,7 +122,7 @@ BResult BioServer::Start()
         sleep(5U);
     }
 
-    if (mConfig->GetNetConfig().enableTls) {
+    if (!mStandaloneMode && mConfig->GetNetConfig().enableTls) {
         auto expireChecker = ExpireChecker::Instance();
         if (expireChecker == nullptr) {
             LOG_INFO("expire checker alloc fail.");
@@ -420,6 +440,34 @@ void BioServer::BioCmExit()
     mCm->Stop();
 }
 
+BResult BioServer::BioStandaloneViewInit()
+{
+    StandaloneView::NodeView nodeView;
+    StandaloneView::PtView ptView;
+    CmNodeId localNid;
+    BResult ret = StandaloneView::Build(mConfig, localNid, nodeView, ptView);
+    if (UNLIKELY(ret != BIO_OK)) {
+        LOG_ERROR("Build standalone view failed, ret:" << ret << ".");
+        return ret;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mNodeViewMutex);
+        mLocalNid = localNid;
+        mNodeView = std::move(nodeView);
+        mCurNodeTimes = Monotonic::TimeUs();
+    }
+    {
+        std::lock_guard<std::mutex> lock(mPtViewMutex);
+        mPtView = std::move(ptView);
+        mCurPtTimes = Monotonic::TimeUs();
+    }
+    mStarted = true;
+    LOG_INFO("Standalone view init success, localNid:" << mLocalNid.VNodeId() << ", ptNum:" << mPtView.size() <<
+        ".");
+    return BIO_OK;
+}
+
 BResult BioServer::BioMirrorServerInit()
 {
     BIO_TP_START(NO_PROCESS_MIRROR_SERVER_INIT, 0);
@@ -437,12 +485,14 @@ BResult BioServer::BioMirrorServerInit()
         return BIO_ERR;
     }
 
-    mMirrorCrb = MirrorServerCrb::Instance();
-    ChkTrue(mMirrorCrb != nullptr, BIO_ERR, "Mirror server crb instance is nullptr.");
-    ret = mMirrorCrb->Init();
-    if (UNLIKELY(ret != BIO_OK)) {
-        LOG_ERROR("Failed to init mirror server crb, ret:" << ret << ".");
-        return BIO_ERR;
+    if (!mStandaloneMode) {
+        mMirrorCrb = MirrorServerCrb::Instance();
+        ChkTrue(mMirrorCrb != nullptr, BIO_ERR, "Mirror server crb instance is nullptr.");
+        ret = mMirrorCrb->Init();
+        if (UNLIKELY(ret != BIO_OK)) {
+            LOG_ERROR("Failed to init mirror server crb, ret:" << ret << ".");
+            return BIO_ERR;
+        }
     }
     mMirrorInited = true;
 
@@ -470,50 +520,68 @@ BResult BioServer::BioCacheInit()
         return ret;
     }
 
-    GetLocDiskId getLocDiskId = [](uint16_t ptId, uint16_t &diskId) -> BResult {
+    GetLocDiskId getLocDiskId = [this](uint16_t ptId, uint16_t &diskId) -> BResult {
+        if (mStandaloneMode) {
+            return GetLocalDiskIdFromView(ptId, diskId);
+        }
         return Cm::Instance()->GetLocalDiskId(ptId, diskId);
     };
     Cache::Instance().RegGetLocDiskId(getLocDiskId);
 
-    GetLocDiskStatus getLocDiskStatus = [](uint16_t ptId, uint16_t diskId, bool &isNormal) -> void {
+    GetLocDiskStatus getLocDiskStatus = [this](uint16_t ptId, uint16_t diskId, bool &isNormal) -> void {
+        if (mStandaloneMode) {
+            GetLocalDiskStatusFromView(ptId, diskId, isNormal);
+            return;
+        }
         Cm::Instance()->GetLocalDiskStatus(ptId, diskId, isNormal);
     };
     Cache::Instance().RegGetLocDiskStatus(getLocDiskStatus);
 
-    CheckServiceState checkService = []() -> bool {
-        return Cm::Instance()->GetServiceState();
+    CheckServiceState checkService = [this]() -> bool {
+        return GetServiceState();
     };
     Cache::Instance().RegCheckServiceState(checkService);
 
-    CheckDegrade checkDegrade = [](uint16_t ptId, bool &isDegrade) -> BResult {
+    CheckDegrade checkDegrade = [this](uint16_t ptId, bool &isDegrade) -> BResult {
+        if (mStandaloneMode) {
+            return CheckPtDegradeFromView(ptId, isDegrade);
+        }
         return Cm::Instance()->CheckPtDegrade(ptId, isDegrade);
     };
     Cache::Instance().RegCheckDegrade(checkDegrade);
 
-    GetGlobEvictOffset evictOffset = [](uint16_t ptId, uint64_t flowId, uint64_t &flowOffset) -> BResult {
+    GetGlobEvictOffset evictOffset = [this](uint16_t ptId, uint64_t flowId, uint64_t &flowOffset) -> BResult {
+        if (mStandaloneMode) {
+            return Cache::Instance().GetEvictOffset(flowId, flowOffset);
+        }
         return MirrorServer::Instance()->GetFlowGlobEvictOffset(ptId, flowId, flowOffset);
     };
     Cache::Instance().RegGetGlobEvictOffset(evictOffset);
 
-    CheckLocRole checkLocRole = [](uint16_t ptId, bool &isMaster) -> BResult {
+    CheckLocRole checkLocRole = [this](uint16_t ptId, bool &isMaster) -> BResult {
+        if (mStandaloneMode) {
+            return CheckLocalRoleFromView(ptId, isMaster);
+        }
         return Cm::Instance()->CheckLocalRole(ptId, isMaster);
     };
     Cache::Instance().RegCheckLocRole(checkLocRole);
 
-    auto channelBroken = [this](uint32_t nodeId, uint32_t pid) -> void {
-        if (pid != 0) {
-            Cache::Instance().HandleProcBroken(pid);
-        } else {
-            ReConnect(nodeId);
+    if (!mStandaloneMode) {
+        auto channelBroken = [this](uint32_t nodeId, uint32_t pid) -> void {
+            if (pid != 0) {
+                Cache::Instance().HandleProcBroken(pid);
+            } else {
+                ReConnect(nodeId);
+            }
+            nodeId = (nodeId == 1024) ? mLocalNid.VNodeId() : nodeId;
+            QuotaHolder holder = { nodeId, static_cast<uint64_t>(pid) };
+            CacheOverloadCtrl::Instance().RecycleQuota(holder);
+        };
+        ret = mNetEngine->RegisterChannelBrokenHandler(channelBroken);
+        if (ret != BIO_OK) {
+            LOG_ERROR("Net engine regist channel broken handler failed,, ret " << ret);
+            return ret;
         }
-        nodeId = (nodeId == 1024) ? mLocalNid.VNodeId() : nodeId;
-        QuotaHolder holder = { nodeId, static_cast<uint64_t>(pid) };
-        CacheOverloadCtrl::Instance().RecycleQuota(holder);
-    };
-    ret = mNetEngine->RegisterChannelBrokenHandler(channelBroken);
-    if (ret != BIO_OK) {
-        LOG_ERROR("Net engine regist channel broken handler failed,, ret " << ret);
-        return ret;
     }
     BIO_TP_END;
 
@@ -697,6 +765,81 @@ void BioServer::ReConnect(uint32_t peerId)
     return;
 }
 
+BResult BioServer::GetLocalDiskIdFromView(uint16_t ptId, uint16_t &diskId)
+{
+    std::lock_guard<std::mutex> lock(mPtViewMutex);
+    auto iter = mPtView.find(ptId);
+    if (iter == mPtView.end()) {
+        return BIO_ERR;
+    }
+
+    for (const auto &copy : iter->second.copys) {
+        if (copy.nodeId == mLocalNid.VNodeId()) {
+            diskId = copy.diskId;
+            return BIO_OK;
+        }
+    }
+    return BIO_ERR;
+}
+
+void BioServer::GetLocalDiskStatusFromView(uint16_t ptId, uint16_t diskId, bool &isNormal)
+{
+    isNormal = false;
+    {
+        std::lock_guard<std::mutex> lock(mNodeViewMutex);
+        auto nodeIter = mNodeView.find(mLocalNid);
+        if (nodeIter == mNodeView.end()) {
+            return;
+        }
+        bool diskNormal = false;
+        for (const auto &disk : nodeIter->second.disks) {
+            if (disk.diskId == diskId) {
+                diskNormal = disk.diskStatus == CM_DISK_NORMAL;
+                break;
+            }
+        }
+        if (!diskNormal) {
+            return;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(mPtViewMutex);
+    auto ptIter = mPtView.find(ptId);
+    if (ptIter == mPtView.end()) {
+        return;
+    }
+    for (const auto &copy : ptIter->second.copys) {
+        if (copy.nodeId == mLocalNid.VNodeId() && copy.diskId == diskId && copy.state == CM_COPY_RUNNING) {
+            isNormal = true;
+            return;
+        }
+    }
+}
+
+BResult BioServer::CheckPtDegradeFromView(uint16_t ptId, bool &isDegrade)
+{
+    isDegrade = false;
+    std::lock_guard<std::mutex> lock(mPtViewMutex);
+    auto iter = mPtView.find(ptId);
+    if (iter == mPtView.end()) {
+        return BIO_ERR;
+    }
+    isDegrade = iter->second.state != CM_PT_NORMAL;
+    return BIO_OK;
+}
+
+BResult BioServer::CheckLocalRoleFromView(uint16_t ptId, bool &isMaster)
+{
+    isMaster = false;
+    std::lock_guard<std::mutex> lock(mPtViewMutex);
+    auto iter = mPtView.find(ptId);
+    if (iter == mPtView.end()) {
+        return BIO_ERR;
+    }
+    isMaster = iter->second.masterNodeId == mLocalNid.VNodeId();
+    return BIO_OK;
+}
+
 BResult BioServer::HandleCmNodeEvent(const std::map<CmNodeId, CmNodeInfo, CmNodeIdCmp> &nodeInfos)
 {
     uint64_t nodeSize = nodeInfos.size();
@@ -774,7 +917,17 @@ int32_t BioServerInit()
         LOG_ERROR("Make bio server instance failed.");
         return BIO_ALLOC_FAIL;
     }
-    return bioServer->Start();
+    return bioServer->Start(false);
+}
+
+int32_t BioServerStandaloneInit()
+{
+    auto bioServer = BioServer::Instance();
+    if (UNLIKELY(bioServer == nullptr)) {
+        LOG_ERROR("Make bio server instance failed.");
+        return BIO_ALLOC_FAIL;
+    }
+    return bioServer->Start(true);
 }
 
 void BioServerExit(void)
@@ -785,6 +938,9 @@ void BioServerExit(void)
 uintptr_t GetBioServerNet()
 {
     NetEnginePtr netEngine = BioServer::Instance()->GetNetEngine();
+    if (netEngine == nullptr) {
+        return 0;
+    }
     return reinterpret_cast<uintptr_t>(netEngine.Get());
 }
 
@@ -818,6 +974,30 @@ uint32_t GetNegoWorkIoTimeOut()
 uint32_t GetPrometheusScrapeIntervalSec()
 {
     return BioServer::Instance()->GetPrometheusScrapeIntervalSec();
+}
+
+int32_t GetRuntimeConfig(ShmInitResponse *rsp)
+{
+    if (rsp == nullptr) {
+        return BIO_INVALID_PARAM;
+    }
+    auto config = BioServer::Instance()->GetConfig()->GetDaemonConfig();
+    rsp->memFd = -1;
+    rsp->serverPid = getpid();
+    rsp->offset = 0;
+    rsp->length = 0;
+    rsp->mKey = 0;
+    rsp->scene = config.workScene;
+    rsp->alignSize = config.workIoAlignSize;
+    rsp->ioTimeOut = config.workIoTimeOut;
+    rsp->netTimeOut = config.workNetTimeOut;
+    rsp->logLevel = config.logLevel;
+    rsp->enableCrc = config.enableCrc;
+    rsp->enableCli = config.enableCli;
+    rsp->enablePrometheus = config.enablePrometheus;
+    rsp->scrapeIntervalSec = config.scrapeIntervalSec;
+    auto ret = strcpy_s(rsp->listenAddress, sizeof(rsp->listenAddress), config.listenAddress.c_str());
+    return ret == 0 ? BIO_OK : BIO_ERR;
 }
 
 int32_t GetLocalNid(GetLocalNidResponse *rsp)

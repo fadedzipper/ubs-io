@@ -43,10 +43,46 @@ static void Log(int level, const char *msg)
     }
 }
 
+void BioClientNet::ApplyRuntimeConfig(const ShmInitResponse &rsp)
+{
+    mShmFd = rsp.memFd;
+    mServerPid = rsp.serverPid;
+    mShmOffset = rsp.offset;
+    mShmLength = rsp.length;
+    mShmKey = rsp.mKey;
+    mWorkScene = rsp.scene;
+    mWorkIoAlignSize = rsp.alignSize;
+    mWorkIoTimeOut = rsp.ioTimeOut;
+    mWorkNetTimeOut = rsp.netTimeOut;
+    mLogLevel = rsp.logLevel;
+    mEnableCrc = rsp.enableCrc;
+    mEnableCli = rsp.enableCli;
+    mEnablePrometheus = rsp.enablePrometheus;
+    mPrometheusListenAddress = rsp.listenAddress;
+    mPrometheusScrapeIntervalSec = rsp.scrapeIntervalSec;
+}
+
 BResult BioClientNet::StartPre(WorkerMode mode, const NetOptions netConf)
 {
     mMode = mode;
     BResult ret = BIO_OK;
+    if (mode == STANDALONE) {
+        ShmInitResponse rsp{};
+        ret = BioClientAgent::Instance()->GetRuntimeConfig(rsp);
+        if (ret != BIO_OK) {
+            CLIENT_LOG_ERROR("Get standalone runtime config failed, ret:" << ret << ".");
+            return ret;
+        }
+        if (!CheckShmInitResp(rsp)) {
+            CLIENT_LOG_ERROR("Invalid standalone runtime config, alignSize:" << rsp.alignSize << ", ioTimeOut:" <<
+                rsp.ioTimeOut << ", netTimeOut:" << rsp.netTimeOut << ", logLevel:" << rsp.logLevel << ", scene:" <<
+                rsp.scene << ".");
+            return BIO_INNER_ERR;
+        }
+        rsp.listenAddress[MAX_LISTEN_ADDRESS_LENGTH - 1] = '\0';
+        ApplyRuntimeConfig(rsp);
+        return BIO_OK;
+    }
     if (mode == CONVERGENCE) { // 融合部署场景获取server端的net引擎实例, client和server共用一个net引擎.
         mNetEngine = BioClientAgent::Instance()->GetNetService();
         if (mNetEngine == nullptr) {
@@ -61,7 +97,7 @@ BResult BioClientNet::StartPre(WorkerMode mode, const NetOptions netConf)
 BResult BioClientNet::StartPost(uint16_t localNid, std::map<CmNodeId, CmNodeInfo, CmNodeIdCmp> nodeView,
     uint16_t protocol, const NetOptions netConf)
 {
-    if (mMode == CONVERGENCE) {
+    if (mMode == CONVERGENCE || mMode == STANDALONE) {
         return BIO_OK;
     }
     mLocalNid = localNid;
@@ -354,7 +390,7 @@ void BioClientNet::StopInner()
 
 BResult BioClientNet::Rebuild(uint16_t localNid, std::map<CmNodeId, CmNodeInfo, CmNodeIdCmp> nodeView)
 {
-    if (mMode == CONVERGENCE) {
+    if (mMode == CONVERGENCE || mMode == STANDALONE) {
         return BIO_OK;
     }
     mLocalNid = localNid;
